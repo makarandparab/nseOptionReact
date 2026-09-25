@@ -395,12 +395,53 @@ export function mapNseToMarketSnapshot(nseResponse, niftySpot = 0, allowedCount 
   const allowedStrikes = getAllowedList(niftyValueStr, allowedCount);
   const allowedSet = new Set(allowedStrikes);
 
+  // ── Pass 1: Iterate ALL strikes to compute overall PCR and collect data for Max Pain ──
+  let overallCallOi = 0;
+  let overallPutOi = 0;
+  const allStrikesOiMap = {};  // For Max Pain calculation across ALL strikes
+
+  for (const item of records.data) {
+    const strike = item.strikePrice;
+    const ce = item.CE || {};
+    const pe = item.PE || {};
+
+    const callOi = ce.openInterest || 0;
+    const putOi = pe.openInterest || 0;
+
+    overallCallOi += callOi;
+    overallPutOi += putOi;
+    allStrikesOiMap[String(strike)] = { callOi, putOi };
+  }
+
+  const totalPCR = overallCallOi > 0 ? parseFloat((overallPutOi / overallCallOi).toFixed(2)) : 0;
+
+  // ── Calculate Max Pain using ALL strikes ──
+  const allStrikeKeys = Object.keys(allStrikesOiMap).map(Number).filter(n => !isNaN(n));
+  let minTotalPain = Number.MAX_VALUE;
+  let maxPainStrike = -1;
+
+  for (const potentialExpiry of allStrikeKeys) {
+    let totalPain = 0;
+    for (const strike of allStrikeKeys) {
+      const data = allStrikesOiMap[String(strike)];
+      if (!data) continue;
+      const callPain = Math.max(0, potentialExpiry - strike) * data.callOi;
+      const putPain = Math.max(0, strike - potentialExpiry) * data.putOi;
+      totalPain += callPain + putPain;
+    }
+    if (totalPain < minTotalPain) {
+      minTotalPain = totalPain;
+      maxPainStrike = potentialExpiry;
+    }
+  }
+
+  // ── Pass 2: Build filtered oiData for display (allowed strikes only) ──
   const oiData = {};
-  let totalCallOi = 0;
-  let totalPutOi = 0;
-  let totalCallOiChange = 0;
-  let totalPutOiChange = 0;
-  let totalVol = 0;
+  let displayCallOi = 0;
+  let displayPutOi = 0;
+  let displayCallOiChange = 0;
+  let displayPutOiChange = 0;
+  let displayVol = 0;
 
   for (const item of records.data) {
     const strike = item.strikePrice;
@@ -418,11 +459,11 @@ export function mapNseToMarketSnapshot(nseResponse, niftySpot = 0, allowedCount 
     const putOiChange = pe.changeinOpenInterest || 0;
     const putOiChangeP = pe.pchangeinOpenInterest || 0;
 
-    totalCallOi += callOi;
-    totalPutOi += putOi;
-    totalCallOiChange += callOiChange;
-    totalPutOiChange += putOiChange;
-    totalVol += (ce.totalTradedVolume || 0) + (pe.totalTradedVolume || 0);
+    displayCallOi += callOi;
+    displayPutOi += putOi;
+    displayCallOiChange += callOiChange;
+    displayPutOiChange += putOiChange;
+    displayVol += (ce.totalTradedVolume || 0) + (pe.totalTradedVolume || 0);
 
     oiData[strikeStr] = {
       strikePrice: strike,
@@ -467,7 +508,6 @@ export function mapNseToMarketSnapshot(nseResponse, niftySpot = 0, allowedCount 
     };
   }
 
-  const totalPCR = totalCallOi > 0 ? parseFloat((totalPutOi / totalCallOi).toFixed(2)) : 0;
   const atm = Math.round(underlyingValue / 50) * 50;
 
   const snapshot = {
@@ -475,17 +515,17 @@ export function mapNseToMarketSnapshot(nseResponse, niftySpot = 0, allowedCount 
     niftyData: String(underlyingValue),
     niftyValue: `${underlyingValue.toFixed(2)} - (${totalPCR.toFixed(2)})`,
     spotStrikePrice: String(atm),
-    maxPainStrike: 0,
+    maxPainStrike: maxPainStrike,
     priceTrend: "UP",
     body: {
       overallData: {
-        totalVol,
-        totalCallOi,
-        totalCallOiChange,
-        totalCallOiChangeP: totalCallOi > 0 ? (totalCallOiChange / totalCallOi) * 100 : 0,
-        totalPutOi,
-        totalPutOiChange,
-        totalPutOiChangeP: totalPutOi > 0 ? (totalPutOiChange / totalPutOi) * 100 : 0,
+        totalVol: displayVol,
+        totalCallOi: overallCallOi,
+        totalCallOiChange: displayCallOiChange,
+        totalCallOiChangeP: overallCallOi > 0 ? (displayCallOiChange / overallCallOi) * 100 : 0,
+        totalPutOi: overallPutOi,
+        totalPutOiChange: displayPutOiChange,
+        totalPutOiChangeP: overallPutOi > 0 ? (displayPutOiChange / overallPutOi) * 100 : 0,
         totalPCR,
         spotPrice: underlyingValue,
         spotChange: 0,
@@ -498,8 +538,7 @@ export function mapNseToMarketSnapshot(nseResponse, niftySpot = 0, allowedCount 
     }
   };
 
-  // Run business calculations
-  calculateMaxPain(snapshot);
+  // Run remaining business calculations on filtered display data
   calculateResistanceSupport(snapshot, true);
   updateMarketSnapshot(snapshot);
 
