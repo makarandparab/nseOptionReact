@@ -182,8 +182,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`\n=================================================`);
-  console.log(`🚀 OI Analyzr Pro Server running on http://localhost:${PORT}`);
-  console.log(`📊 Mode: Production-ready React + NSE Proxy`);
-  console.log(`=================================================\n`);
+console.log(`Server running on port ${PORT}`);
 });
